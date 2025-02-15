@@ -112,7 +112,7 @@ class HAMMER(nn.Module):
         self.mdfend_model = MDFEND('bert-base-uncased',domain_num=9)
         #mdfend_model load checkpoint
         self.load_mdfend_checkpoint()
-
+        self.mdfend_model.eval()
         self.share_to_text = nn.Linear(320,768)
 
         # 添加融合层（如果使用 concat 方式）
@@ -195,7 +195,17 @@ class HAMMER(nn.Module):
 
         return loss_bbox.sum() / num_boxes, loss_giou.sum() / num_boxes
 
-    def forward(self, image, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0, is_train=True, return_attention=False):
+    def forward(self, image=None, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0, is_train=True, return_attention=False, mode='multi-label',):
+        mdfend_input = {}
+        mdfend_text_input = {}
+        if mode == 'text':
+            mdfend_input['domain'] = torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
+            mdfend_text_input['token_id']=text.input_ids
+            mdfend_text_input['mask']=text.attention_mask
+            mdfend_input['text']=mdfend_text_input
+            return self.mdfend_model.predict(mdfend_input)
+
+
         batch_size = text.input_ids.size(0)
         seq_length = text.input_ids.size(1)  # 实际序列长度
         hidden_size = 768  # BERT 的隐藏层大小
@@ -375,10 +385,10 @@ class HAMMER(nn.Module):
             #text_embeds = text_embeds + mdfend_transformed
             text_embeds=mdfend_transformed
 
-                # 4. 特征融合（三种方式）
+            # 4. 特征融合（三种方式）
             # a. 加权融合
-            # fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
-            # combined_embeds = fusion_weight * text_embeds + (1 - fusion_weight) * mdfend_transformed
+            fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
+            combined_embeds = fusion_weight * text_embeds + (1 - fusion_weight) * mdfend_transformed
 
             # b. 注意力融合
             # attention_weights = torch.matmul(text_embeds, mdfend_transformed.transpose(-2, -1))
@@ -386,8 +396,8 @@ class HAMMER(nn.Module):
             # combined_embeds = torch.matmul(attention_weights, mdfend_transformed)
 
             # c. concat 后接线性层
-            concat_embeds = torch.cat([text_embeds, mdfend_transformed], dim=-1)
-            combined_embeds = self.fusion_layer(concat_embeds)  # 需要添加 fusion_layer 属性
+            # concat_embeds = torch.cat([text_embeds, mdfend_transformed], dim=-1)
+            # combined_embeds = self.fusion_layer(concat_embeds)  # 需要添加 fusion_layer 属性
             text_embeds=combined_embeds
             output_pos = self.text_encoder.bert(encoder_embeds = text_embeds, 
                                             attention_mask = text.attention_mask,
@@ -485,39 +495,4 @@ def concat_all_gather(tensor):
     output = torch.cat(tensors_gather, dim=0)
     return output
 
-def visualize_attention(attn_weights, image_patches, text_tokens):
-    """
-    可视化注意力权重
-    
-    Args:
-        attn_weights: shape [num_heads, num_image_patches, num_text_tokens]
-        image_patches: 图像块的标识符列表
-        text_tokens: 文本标记列表
-    """
-    # 取平均注意力权重
-    avg_attn = attn_weights.mean(dim=0).cpu().numpy()
-    
-    # 绘制热力图
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(avg_attn, 
-                xticklabels=text_tokens,
-                yticklabels=image_patches,
-                cmap='viridis')
-    plt.xlabel('Text Tokens')
-    plt.ylabel('Image Patches')
-    plt.title('Image-Text Attention Map')
-    plt.show()
 
-# 使用示例
-def get_attention_weights(model, image, text):
-    with torch.no_grad():
-        # 获取注意力权重
-        outputs = model(image, text, return_attention=True)  # 需要修改模型forward方法
-        attn_weights = outputs['attention_weights']
-        
-        # 获取图像块和文本标记
-        image_patches = [f'patch_{i}' for i in range(attn_weights.size(1))]
-        text_tokens = model.tokenizer.convert_ids_to_tokens(text.input_ids[0])
-        
-        # 可视化
-        visualize_attention(attn_weights[0], image_patches, text_tokens)
