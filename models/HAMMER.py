@@ -5,16 +5,11 @@ from models.xbert import BertConfig, BertForMaskedLM, BertForTokenClassification
 import torch
 import torch.nn.functional as F
 from torch import nn
-
-import numpy as np
-import random
-
 from models import box_ops
 from tools.multilabel_metrics import get_multi_label
 from timm.models.layers import trunc_normal_
 
-import matplotlib.pyplot as plt
-import seaborn as sns
+
 
 
 from models.mdfend import MDFEND
