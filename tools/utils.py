@@ -3,6 +3,7 @@ import cv2
 # from timm.optim import AdamW
 import torch
 from PIL import Image
+from PIL import ImageFile
 from torch import optim
 from torch.optim import lr_scheduler
 from torch.optim.rmsprop import RMSprop
@@ -21,6 +22,9 @@ from torch import Tensor
 import json
 import os
 import torch.distributed as dist
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+Image.MAX_IMAGE_PIXELS = None
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -203,18 +207,17 @@ def load_and_preprocess_image(image_path, image_res=256):
     加载并预处理图像
     """
     try:
-        image = Image.open("469274-170804-infoswap.jpg").convert('RGB')
+        image = Image.open(image_path).convert('RGB')
     except:
         raise ValueError("### Warning: fakenews_dataset Image.open")
 
     # 定义图像转换
     transform = transforms.Compose([
-        transforms.Resize((image_res, image_res), interpolation=Image.BICUBIC),
+        transforms.Resize((image_res, image_res),interpolation=Image.BICUBIC),
         transforms.ToTensor(),
-        transforms.Normalize((0.48145466, 0.4578275, 0.40821073),
-                             (0.26862954, 0.26130258, 0.27577711))
+        transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
-
     # 应用转换
     image = transform(image)
-    return image.unsqueeze(0)  # 添加batch维度
+
+    return image.unsqueeze(0) # 添加batch维度

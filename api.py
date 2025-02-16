@@ -1,55 +1,13 @@
-import argparse
 from types import SimpleNamespace
-
-import numpy
-import numpy as np
-import yaml
 
 from transformers import BertTokenizerFast
 
-from models import box_ops
-from models.vit import interpolate_pos_embed
+
 from models.HAMMER import HAMMER
 import torch
-import torch.nn.functional as F
-from PIL import Image
+
 
 from tools.utils import load_and_preprocess_image
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-
-    # 基本配置
-    parser.add_argument('--config', default='configs/HAMMER.yaml', type=str)
-    parser.add_argument('--output_dir', default='results', type=str)
-    parser.add_argument('--device', default='cuda')
-    parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--text_encoder', default='bert-base-uncased')
-
-    # 分布式训练相关
-    parser.add_argument('--world_size', default=1, type=int)
-    parser.add_argument('--dist-url', default='tcp://127.0.0.1:10031')
-    parser.add_argument('--rank', default=0, type=int)
-    parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm', 'mpi'], default='none')
-
-    # 日志相关
-    parser.add_argument('--log_num', '-l', type=str)
-    parser.add_argument('--model_save_epoch', type=int, default=5)
-    parser.add_argument('--token_momentum', default=False, action='store_true')
-    parser.add_argument('--test_epoch', default='best', type=str)
-    parser.add_argument('--log', action='store_true')
-
-    args = parser.parse_args()
-
-    # 加载yaml配置
-    config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
-
-    # 将yaml配置添加到args
-    for k, v in config.items():
-        setattr(args, k, v)
-
-    return args, config
 
 
 class AbstractFakeNewsDetector:
@@ -71,15 +29,12 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
             text_encoder='bert-base-uncased',
             tokenizer=self.tokenizer,
             init_deit=True)
-        checkpoint_dir = f'save/best.pth'
+        checkpoint_dir = args.hammer_checkpoint
         checkpoint = torch.load(checkpoint_dir, map_location=self.device)
-        state_dict = checkpoint['model']
-        pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'], self.model.visual_encoder)
-        state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
-
+        self.all_multicls_dict = {0:'face_swap',1:'face_attribute',2:'text_swap',3:'text_attribute'}
         # model.load_state_dict(state_dict)
 
-        self.model.load_state_dict(state_dict, strict=False)
+        self.model.load_state_dict(checkpoint['model'], strict=False)
         self.model.to(self.device)
         self.model.eval()
 
@@ -101,7 +56,8 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
             cls_pred = logits_multicls[:, cls_idx]
             cls_pred[cls_pred >= 0] = 1
             cls_pred[cls_pred < 0] = 0
-            pred_all_multicls.append(cls_pred.cpu().numpy().item())
+            if cls_pred==1:
+                pred_all_multicls.append(self.all_multicls_dict[cls_idx])
 
         x_c, y_c, w, h = output_coord.unbind(-1)
         b = [x_c, y_c, w, h]
@@ -118,6 +74,6 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
         for i, token in enumerate(self.tokenizer.convert_ids_to_tokens(text_input.input_ids[0])):
             if i>=valid_length:
                 break
-            word_preds[token] = tok_pred[i]
+            word_preds[token] = int(tok_pred[i])
 
         return pred_cls, pred_all_multicls, box, word_preds

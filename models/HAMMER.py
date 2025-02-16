@@ -119,7 +119,7 @@ class HAMMER(nn.Module):
         self.fusion_layer = nn.Sequential(
             nn.Linear(768 * 2, 768),
             nn.LayerNorm(768),
-            nn.ReLU()
+            nn.GELU()
         )
 
         # 添加可学习的融合权重
@@ -149,7 +149,7 @@ class HAMMER(nn.Module):
     def load_mdfend_checkpoint(self):
         # 加载 checkpoint
         print("### 加载 MDFEND 模型权重")
-        checkpoint = torch.load('save/MDFEND-2025-02-14-10_57_02.pth')
+        checkpoint = torch.load(self.args.mdfend_checkpoint, map_location=self.args.device)
         state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
         
         # 创建新的 state_dict
@@ -376,19 +376,20 @@ class HAMMER(nn.Module):
                                     mask=text.attention_mask,
                                     domain=torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
             )  # [batch_size, 320]
-            if not hasattr(self, 'share_to_text') or self.share_to_text.out_features != seq_length * hidden_size:
-                self.share_to_text = nn.Linear(320, seq_length * hidden_size).to(text.input_ids.device)
-
-            mdfend_transformed = self.share_to_text(mdfend_feature)
-            mdfend_transformed = mdfend_transformed.view(batch_size, seq_length, hidden_size)
-
-            #text_embeds = text_embeds + mdfend_transformed
-            text_embeds=mdfend_transformed
+            mdfend_feature=self.share_to_text(mdfend_feature)
+            # if not hasattr(self, 'share_to_text') or self.share_to_text.out_features != seq_length * hidden_size:
+            #     self.share_to_text = nn.Linear(320, seq_length * hidden_size).to(text.input_ids.device)
+            #
+            # mdfend_transformed = self.share_to_text(mdfend_feature)
+            # mdfend_transformed = mdfend_transformed.view(batch_size, seq_length, hidden_size)
+            #
+            # #text_embeds = text_embeds + mdfend_transformed
+            # text_embeds=mdfend_transformed
 
             # 4. 特征融合（三种方式）
             # a. 加权融合
-            fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
-            combined_embeds = fusion_weight * text_embeds + (1 - fusion_weight) * mdfend_transformed
+            # fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
+            # combined_embeds = fusion_weight * text_embeds + (1 - fusion_weight) * mdfend_transformed
 
             # b. 注意力融合
             # attention_weights = torch.matmul(text_embeds, mdfend_transformed.transpose(-2, -1))
@@ -398,14 +399,19 @@ class HAMMER(nn.Module):
             # c. concat 后接线性层
             # concat_embeds = torch.cat([text_embeds, mdfend_transformed], dim=-1)
             # combined_embeds = self.fusion_layer(concat_embeds)  # 需要添加 fusion_layer 属性
-            text_embeds=combined_embeds
+            # text_embeds=combined_embeds
             output_pos = self.text_encoder.bert(encoder_embeds = text_embeds, 
                                             attention_mask = text.attention_mask,
                                             encoder_hidden_states = image_embeds,
                                             encoder_attention_mask = image_atts,      
                                             return_dict = True,
                                             mode = 'fusion',
-                                        )               
+                                        )
+            output_feature = output_pos.last_hidden_state[:,0,:]
+            # combined_feature = torch.cat([output_feature, mdfend_feature], dim=1)
+            # fused_feature = self.fusion_layer(combined_feature)
+            fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
+            fused_feature=fusion_weight*output_feature+(1-fusion_weight)*mdfend_feature
             ##================= IMG ========================## 
             bs = image.size(0)
             cls_tokens_local = self.cls_token_local.expand(bs, -1, -1)
@@ -429,9 +435,9 @@ class HAMMER(nn.Module):
                                               value=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]))[0]
             output_coord = self.bbox_head(local_feat_aggr.squeeze(1)).sigmoid()
             ##================= BIC ========================## 
-            logits_real_fake = self.itm_head(output_pos.last_hidden_state[:,0,:])
+            logits_real_fake = self.itm_head(fused_feature)
             ##================= MLC ========================## 
-            logits_multicls = self.cls_head(output_pos.last_hidden_state[:,0,:])
+            logits_multicls = self.cls_head(output_feature)
             ##================= TMG ========================##   
             input_ids = text.input_ids.clone()
             logits_tok = self.text_encoder(input_ids, 

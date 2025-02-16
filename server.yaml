@@ -1,0 +1,65 @@
+swagger: "2.0"
+info:
+  title: Backend API
+  version: "0.1"
+consumes:
+  - application/json
+produces:
+  - application/json
+
+basePath: /api
+
+paths:
+  /upload:
+    post:
+      summary: "Upload an image"
+      operationId: server.upload_image
+      consumes:
+        - "multipart/form-data"
+      parameters:
+        - name: file
+          in: formData
+          required: true
+          type: file
+      responses:
+        200:
+          description: "Image uploaded successfully"
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Image uploaded successfully"
+              image_path:
+                type: string
+                example: "/path/to/image.jpg"
+  /analyze:
+    post:
+      tags:
+        - all
+      summary: Analyze text
+      operationId: server.analyze
+      parameters:
+        - in: body
+          name: analyze_request
+          schema:
+            $ref: '#/definitions/AnalyzeRequest'
+      responses:
+        200:
+          description: OK
+          schema:
+            type: object
+
+
+
+definitions:
+  AnalyzeRequest:
+    type: object
+    properties:
+      text:
+        type: string
+      image:
+        type: string
+    required:
+      - text
+      - image
