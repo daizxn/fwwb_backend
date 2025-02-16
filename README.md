@@ -15,6 +15,6 @@ api:
     -POST
         -json
         {
-            "text":String
+            "text":String,
             "image":String(图片路径)
         }       
