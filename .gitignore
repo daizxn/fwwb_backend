@@ -4,7 +4,12 @@
 /.settings/
 /.vscode/
 /bin/
-
+models/__pycache__/
+models/layers/__pycache__/
+tools/__pycache__/
+save/
+image/
+__pycache__/
 .classpath
 .project
 .settings
