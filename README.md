@@ -4,3 +4,17 @@
 [mdfend_checkpoint](https://1drv.ms/u/c/fa8cabf58f35e0e0/EXwiZiiK6Z9PiPjeqBk7mBIBD4W3W6tcohgE5bTwutJ2OA?e=QzumQJ)
 
 [hammer_checkpoint](https://1drv.ms/u/c/fa8cabf58f35e0e0/EalCEnbwp9RNrVr3o9lCTaYBOozE8Sdr2UmqBdPdZ7lgiw?e=SLE4BV)
+
+api:
+/api/upload
+ -POST
+    -form-data
+上传图片，返回图片的url
+
+/api/analyze
+    -POST
+        -json
+        {
+            "text":String
+            "image":String(图片路径)
+        }       
