@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 from transformers import BertTokenizerFast
@@ -39,10 +40,27 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
         self.model.eval()
 
     def predict(self, text, image_path=None, mode='multi-label'):
-        text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True, return_tensors='pt')
-        text_input = {k: v.to(self.device) for k, v in text_input.items()}
-        text_input = SimpleNamespace(**text_input)
-        image = load_and_preprocess_image(image_path).to(self.device)
+        time_start = time.time()
+        stream1 = torch.cuda.Stream()
+        stream2 = torch.cuda.Stream()
+
+        with torch.no_grad(), torch.cuda.amp.autocast():
+            # Stream 1: 处理文本输入
+            with torch.cuda.stream(stream1):
+                text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True, return_tensors='pt')
+                text_input = {k: v.to(self.device) for k, v in text_input.items()}
+                text_input = SimpleNamespace(**text_input)
+
+            # Stream 2: 处理图像输入
+            with torch.cuda.stream(stream2):
+                image = load_and_preprocess_image(image_path).to(self.device)
+
+            # 同步两个流，确保输入处理完成
+            torch.cuda.synchronize()
+        time_end= time.time()
+        print('预处理时间：',time_end-time_start)
+        # 进行推理
+        time_start = time.time()
         with torch.no_grad():
             logits_real_fake, logits_multicls, output_coord, logits_tok, attn_weights = self.model(image=image,
                                                                                                    text=text_input,
@@ -50,30 +68,50 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
                                                                                                    return_attention=True,
                                                                                                    mode=mode)
 
-        pred_cls = logits_real_fake.argmax(1).cpu().numpy().item()
-        pred_all_multicls = []
-        for cls_idx in range(logits_multicls.shape[1]):
-            cls_pred = logits_multicls[:, cls_idx]
-            cls_pred[cls_pred >= 0] = 1
-            cls_pred[cls_pred < 0] = 0
-            if cls_pred==1:
-                pred_all_multicls.append(self.all_multicls_dict[cls_idx])
+        time_end = time.time()
+        print('推理时间：', time_end - time_start)
 
-        x_c, y_c, w, h = output_coord.unbind(-1)
-        b = [x_c, y_c, w, h]
-        box = [i.cpu().numpy().item() for i in b]
+        time_start = time.time()
+        # 并行处理预测结果
+        stream1.wait_stream(torch.cuda.current_stream())
+        stream2.wait_stream(torch.cuda.current_stream())
 
-        logits_tok_reshape = logits_tok.view(-1, 2)
-        tok_pred = logits_tok_reshape.argmax(1).cpu().numpy()
+        with torch.cuda.stream(stream1):
+            # 处理分类结果
+            pred_cls = logits_real_fake.argmax(1).cpu()
+            pred_all_multicls = []
+            for cls_idx in range(logits_multicls.shape[1]):
+                cls_pred = logits_multicls[:, cls_idx]
+                cls_pred[cls_pred >= 0] = 1
+                cls_pred[cls_pred < 0] = 0
+                if cls_pred == 1:
+                    pred_all_multicls.append(self.all_multicls_dict[cls_idx])
 
-        valid_length = text_input.attention_mask[0].sum().item() - 1  # 减去CLS token
-        attn_weights = attn_weights[0][:valid_length, :valid_length].cpu().numpy()
-        tok_pred = tok_pred[:valid_length]
+        with torch.cuda.stream(stream2):
+            # 处理边界框和token预测
+            x_c, y_c, w, h = output_coord.unbind(-1)
+            box = [i.cpu() for i in [x_c, y_c, w, h]]
 
-        word_preds = {}
-        for i, token in enumerate(self.tokenizer.convert_ids_to_tokens(text_input.input_ids[0])):
-            if i>=valid_length:
-                break
-            word_preds[token] = int(tok_pred[i])
+            logits_tok_reshape = logits_tok.view(-1, 2)
+            tok_pred = logits_tok_reshape.argmax(1).cpu()
+
+            valid_length = text_input.attention_mask[0].sum().item() - 1
+            attn_weights = attn_weights[0][:valid_length, :valid_length].cpu()
+            tok_pred = tok_pred[:valid_length]
+
+            word_preds = {}
+            for i, token in enumerate(self.tokenizer.convert_ids_to_tokens(text_input.input_ids[0])):
+                if i >= valid_length:
+                    break
+                word_preds[token] = int(tok_pred[i])
+
+        # 同步所有流
+        torch.cuda.synchronize()
+
+        # 转换为numpy数组并返回结果
+        pred_cls = pred_cls.numpy().item()
+        box = [i.numpy().item() for i in box]
+        time_end = time.time()
+        print('后处理时间：', time_end - time_start)
 
         return pred_cls, pred_all_multicls, box, word_preds

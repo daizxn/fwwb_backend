@@ -9,29 +9,31 @@ from models import box_ops
 from tools.multilabel_metrics import get_multi_label
 from timm.models.layers import trunc_normal_
 
-
-
-
 from models.mdfend import MDFEND
 
+import torch.cuda
+from torch.cuda.amp import autocast
+from torch.cuda import Stream
+
+
 class HAMMER(nn.Module):
-    def __init__(self, 
-                 args = None, 
-                 config = None,               
-                 text_encoder = None,
-                 tokenizer = None,
-                 init_deit = True
+    def __init__(self,
+                 args=None,
+                 config=None,
+                 text_encoder=None,
+                 tokenizer=None,
+                 init_deit=True
                  ):
         super().__init__()
-        
+
         self.args = args
-        self.tokenizer = tokenizer 
+        self.tokenizer = tokenizer
         embed_dim = config['embed_dim']
-     
+
         self.visual_encoder = VisionTransformer(
-            img_size=config['image_res'], patch_size=16, embed_dim=768, depth=12, num_heads=12, 
-            mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6))   
-        
+            img_size=config['image_res'], patch_size=16, embed_dim=768, depth=12, num_heads=12,
+            mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6))
+
         if init_deit:
             checkpoint = torch.hub.load_state_dict_from_url(
                 url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",
@@ -39,23 +41,23 @@ class HAMMER(nn.Module):
             state_dict = checkpoint["model"]
             pos_embed_reshaped = interpolate_pos_embed(state_dict['pos_embed'], self.visual_encoder)
             state_dict['pos_embed'] = pos_embed_reshaped
-            msg = self.visual_encoder.load_state_dict(state_dict,strict=False)
-            print(msg)          
-            
-        vision_width = config['vision_width']       
+            msg = self.visual_encoder.load_state_dict(state_dict, strict=False)
+            print(msg)
+
+        vision_width = config['vision_width']
         bert_config = BertConfig.from_json_file(config['bert_config'])
-        
-        self.text_encoder = BertForTokenClassification.from_pretrained(text_encoder, 
-                                                                    config=bert_config, 
-                                                                    label_smoothing=config['label_smoothing'])      
+
+        self.text_encoder = BertForTokenClassification.from_pretrained(text_encoder,
+                                                                       config=bert_config,
+                                                                       label_smoothing=config['label_smoothing'])
 
         text_width = self.text_encoder.config.hidden_size
         self.vision_proj = nn.Linear(vision_width, embed_dim)
-        self.text_proj = nn.Linear(text_width, embed_dim)         
+        self.text_proj = nn.Linear(text_width, embed_dim)
 
-        self.temp = nn.Parameter(torch.ones([]) * config['temp'])   
+        self.temp = nn.Parameter(torch.ones([]) * config['temp'])
         self.queue_size = config['queue_size']
-        self.momentum = config['momentum']  
+        self.momentum = config['momentum']
 
         # creat itm head
         self.itm_head = self.build_mlp(input_dim=text_width, output_dim=2)
@@ -68,49 +70,51 @@ class HAMMER(nn.Module):
 
         # create momentum models
         self.visual_encoder_m = VisionTransformer(
-            img_size=config['image_res'], patch_size=16, embed_dim=768, depth=12, num_heads=12, 
-            mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6)) 
+            img_size=config['image_res'], patch_size=16, embed_dim=768, depth=12, num_heads=12,
+            mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6))
         self.vision_proj_m = nn.Linear(vision_width, embed_dim)
-        self.text_encoder_m = BertForTokenClassification.from_pretrained(text_encoder, 
-                                                                    config=bert_config,
-                                                                    label_smoothing=config['label_smoothing'])       
-        self.text_proj_m = nn.Linear(text_width, embed_dim)    
-        
-        self.model_pairs = [[self.visual_encoder,self.visual_encoder_m],
-                            [self.vision_proj,self.vision_proj_m],
-                            [self.text_encoder,self.text_encoder_m],
-                            [self.text_proj,self.text_proj_m],
-                           ]
-        
+        self.text_encoder_m = BertForTokenClassification.from_pretrained(text_encoder,
+                                                                         config=bert_config,
+                                                                         label_smoothing=config['label_smoothing'])
+        self.text_proj_m = nn.Linear(text_width, embed_dim)
+
+        self.model_pairs = [[self.visual_encoder, self.visual_encoder_m],
+                            [self.vision_proj, self.vision_proj_m],
+                            [self.text_encoder, self.text_encoder_m],
+                            [self.text_proj, self.text_proj_m],
+                            ]
+
         self.copy_params()
 
         # create the queue
         self.register_buffer("image_queue", torch.randn(embed_dim, self.queue_size))
         self.register_buffer("text_queue", torch.randn(embed_dim, self.queue_size))
-        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))  
-                             
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+
         self.image_queue = nn.functional.normalize(self.image_queue, dim=0)
         self.text_queue = nn.functional.normalize(self.text_queue, dim=0)
 
-        self.norm_layer_aggr =nn.LayerNorm(text_width)
+        self.norm_layer_aggr = nn.LayerNorm(text_width)
         self.cls_token_local = nn.Parameter(torch.zeros(1, 1, text_width))
         self.aggregator = nn.MultiheadAttention(text_width, 12, dropout=0.0, batch_first=True)
 
-        self.norm_layer_it_cross_atten =nn.LayerNorm(text_width)
+        self.norm_layer_it_cross_atten = nn.LayerNorm(text_width)
         self.it_cross_attn = nn.MultiheadAttention(text_width, 12, dropout=0.0, batch_first=True)
 
         trunc_normal_(self.cls_token_local, std=.02)
         self.apply(self._init_weights)
 
-
         # add mdfend_model
-        self.mdfend_model = MDFEND('bert-base-uncased',domain_num=9)
-        #mdfend_model load checkpoint
+        self.mdfend_model = MDFEND('bert-base-uncased', domain_num=9)
+
+
+        # mdfend_model load checkpoint
         self.load_mdfend_checkpoint()
         self.mdfend_model.eval()
-        self.share_to_text = nn.Linear(320,768)
+        self.share_to_text = nn.Linear(320, 768)
 
-        # 添加融合层（如果使用 concat 方式）
+
+    # 添加融合层（如果使用 concat 方式）
         self.fusion_layer = nn.Sequential(
             nn.Linear(768 * 2, 768),
             nn.LayerNorm(768),
@@ -134,7 +138,7 @@ class HAMMER(nn.Module):
             nn.Linear(input_dim, input_dim * 2),
             nn.LayerNorm(input_dim * 2),
             nn.GELU(),
-            nn.Linear(input_dim* 2, input_dim * 2),
+            nn.Linear(input_dim * 2, input_dim * 2),
             nn.LayerNorm(input_dim * 2),
             nn.GELU(),
             nn.Linear(input_dim * 2, output_dim)
@@ -146,10 +150,10 @@ class HAMMER(nn.Module):
         print("### 加载 MDFEND 模型权重")
         checkpoint = torch.load(self.args.mdfend_checkpoint, map_location=self.args.device)
         state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-        
+
         # 创建新的 state_dict
         new_state_dict = {}
-        
+
         # 修改键名
         for key, value in state_dict.items():
             if key.startswith('bert'):
@@ -158,7 +162,7 @@ class HAMMER(nn.Module):
                 new_state_dict[new_key] = value
             else:
                 new_state_dict[key] = value
-        
+
         # 加载修改后的权重
         self.mdfend_model.load_state_dict(new_state_dict, strict=False)
 
@@ -190,110 +194,111 @@ class HAMMER(nn.Module):
 
         return loss_bbox.sum() / num_boxes, loss_giou.sum() / num_boxes
 
-    def forward(self, image=None, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0, is_train=True, return_attention=False, mode='multi-label',):
+    def forward(self, image=None, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0,
+                is_train=True, return_attention=False, mode='multi-label', ):
         mdfend_input = {}
         mdfend_text_input = {}
         if mode == 'text':
             mdfend_input['domain'] = torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
-            mdfend_text_input['token_id']=text.input_ids
-            mdfend_text_input['mask']=text.attention_mask
-            mdfend_input['text']=mdfend_text_input
+            mdfend_text_input['token_id'] = text.input_ids
+            mdfend_text_input['mask'] = text.attention_mask
+            mdfend_input['text'] = mdfend_text_input
             return self.mdfend_model.predict(mdfend_input)
-
 
         batch_size = text.input_ids.size(0)
         seq_length = text.input_ids.size(1)  # 实际序列长度
         hidden_size = 768  # BERT 的隐藏层大小
         if is_train:
             with torch.no_grad():
-                self.temp.clamp_(0.001,0.5)
+                self.temp.clamp_(0.001, 0.5)
             ##================= multi-label convert ========================## 
             multicls_label, real_label_pos = get_multi_label(label, image)
-            
+
             ##================= MAC ========================## 
-            image_embeds = self.visual_encoder(image) 
-            image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(image.device)
+            image_embeds = self.visual_encoder(image)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
 
-            image_feat = F.normalize(self.vision_proj(image_embeds[:,0,:]),dim=-1)  
+            image_feat = F.normalize(self.vision_proj(image_embeds[:, 0, :]), dim=-1)
 
-            text_output = self.text_encoder.bert(text.input_ids, attention_mask = text.attention_mask,                      
-                                            return_dict = True, mode = 'text')            
+            text_output = self.text_encoder.bert(text.input_ids, attention_mask=text.attention_mask,
+                                                 return_dict=True, mode='text')
             text_embeds = text_output.last_hidden_state
-            text_feat = F.normalize(self.text_proj(text_embeds[:,0,:]),dim=-1)                 
-                
+            text_feat = F.normalize(self.text_proj(text_embeds[:, 0, :]), dim=-1)
+
             # get momentum features
             with torch.no_grad():
                 self._momentum_update()
-                image_embeds_m = self.visual_encoder_m(image) 
-                image_feat_m = F.normalize(self.vision_proj_m(image_embeds_m[:,0,:]),dim=-1)  
-                image_feat_all = torch.cat([image_feat_m.t(),self.image_queue.clone().detach()],dim=1)           
+                image_embeds_m = self.visual_encoder_m(image)
+                image_feat_m = F.normalize(self.vision_proj_m(image_embeds_m[:, 0, :]), dim=-1)
+                image_feat_all = torch.cat([image_feat_m.t(), self.image_queue.clone().detach()], dim=1)
 
-                text_output_m = self.text_encoder_m.bert(text.input_ids, attention_mask = text.attention_mask,                      
-                                                    return_dict = True, mode = 'text')    
-                text_feat_m = F.normalize(self.text_proj_m(text_output_m.last_hidden_state[:,0,:]),dim=-1) 
-                text_feat_all = torch.cat([text_feat_m.t(),self.text_queue.clone().detach()],dim=1)
+                text_output_m = self.text_encoder_m.bert(text.input_ids, attention_mask=text.attention_mask,
+                                                         return_dict=True, mode='text')
+                text_feat_m = F.normalize(self.text_proj_m(text_output_m.last_hidden_state[:, 0, :]), dim=-1)
+                text_feat_all = torch.cat([text_feat_m.t(), self.text_queue.clone().detach()], dim=1)
 
-                sim_i2t_m = image_feat_m @ text_feat_all / self.temp 
-                sim_t2i_m = text_feat_m @ image_feat_all / self.temp     
+                sim_i2t_m = image_feat_m @ text_feat_all / self.temp
+                sim_t2i_m = text_feat_m @ image_feat_all / self.temp
 
                 sim_targets = torch.zeros(sim_i2t_m.size()).to(image.device)
                 # fine-grained alignment: only orig should be aligned, 1 here means img-text aligned 
-                sim_targets[real_label_pos, real_label_pos] = 1 
+                sim_targets[real_label_pos, real_label_pos] = 1
 
                 sim_targets_g2g = torch.zeros(sim_i2t_m.size()).to(image.device)
-                sim_targets_g2g.fill_diagonal_(1)       
-                
-                sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
-                sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets        
+                sim_targets_g2g.fill_diagonal_(1)
 
-            sim_i2t = image_feat @ text_feat_all / self.temp 
-            sim_t2i = text_feat @ image_feat_all / self.temp 
-                                
-            loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1)*sim_i2t_targets,dim=1).mean()
-            loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1)*sim_t2i_targets,dim=1).mean() 
-            
+                sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
+                sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets
+
+            sim_i2t = image_feat @ text_feat_all / self.temp
+            sim_t2i = text_feat @ image_feat_all / self.temp
+
+            loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1) * sim_i2t_targets, dim=1).mean()
+            loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1) * sim_t2i_targets, dim=1).mean()
+
             # in-modality g2g loss
             sim_i2i = image_feat @ image_feat_all / self.temp
             sim_t2t = text_feat @ text_feat_all / self.temp
 
-            loss_i2i = -torch.sum(F.log_softmax(sim_i2i, dim=1)*sim_targets_g2g,dim=1).mean()
-            loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1)*sim_targets_g2g,dim=1).mean()
+            loss_i2i = -torch.sum(F.log_softmax(sim_i2i, dim=1) * sim_targets_g2g, dim=1).mean()
+            loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1) * sim_targets_g2g, dim=1).mean()
 
-            loss_MAC = (loss_i2t+loss_t2i+loss_i2i+loss_t2t)/4
+            loss_MAC = (loss_i2t + loss_t2i + loss_i2i + loss_t2t) / 4
 
             self._dequeue_and_enqueue(image_feat_m, text_feat_m)
 
             ##================= BIC ========================## 
             # forward the positve image-text pair
-            output_pos = self.text_encoder.bert(encoder_embeds = text_embeds, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            mode = 'fusion',
-                                        )            
+            output_pos = self.text_encoder.bert(encoder_embeds=text_embeds,
+                                                attention_mask=text.attention_mask,
+                                                encoder_hidden_states=image_embeds,
+                                                encoder_attention_mask=image_atts,
+                                                return_dict=True,
+                                                mode='fusion',
+                                                )
             with torch.no_grad():
-                bs = image.size(0)          
+                bs = image.size(0)
 
             itm_labels = torch.ones(bs, dtype=torch.long).to(image.device)
-            itm_labels[real_label_pos] = 0 # fine-grained matching: only orig should be matched, 0 here means img-text matching
-            vl_output = self.itm_head(output_pos.last_hidden_state[:,0,:])   
-            loss_BIC = F.cross_entropy(vl_output, itm_labels) 
+            itm_labels[
+                real_label_pos] = 0  # fine-grained matching: only orig should be matched, 0 here means img-text matching
+            vl_output = self.itm_head(output_pos.last_hidden_state[:, 0, :])
+            loss_BIC = F.cross_entropy(vl_output, itm_labels)
 
             ##================= MLC ========================## 
-            output_cls = self.cls_head(output_pos.last_hidden_state[:,0,:])
+            output_cls = self.cls_head(output_pos.last_hidden_state[:, 0, :])
             loss_MLC = F.binary_cross_entropy_with_logits(output_cls, multicls_label.type(torch.float))
 
             ##================= IMG ========================## 
             # local features of visual part
             cls_tokens_local = self.cls_token_local.expand(bs, -1, -1)
 
-            text_attention_mask_clone = text.attention_mask.clone() # [:,1:] for ingoring class token
-            local_feat_padding_mask_text = text_attention_mask_clone==0 # 0 = pad token
+            text_attention_mask_clone = text.attention_mask.clone()  # [:,1:] for ingoring class token
+            local_feat_padding_mask_text = text_attention_mask_clone == 0  # 0 = pad token
 
             attn_output, attn_weights = self.it_cross_attn(
-                query=self.norm_layer_it_cross_atten(image_embeds), 
-                key=self.norm_layer_it_cross_atten(text_embeds), 
+                query=self.norm_layer_it_cross_atten(image_embeds),
+                key=self.norm_layer_it_cross_atten(text_embeds),
                 value=self.norm_layer_it_cross_atten(text_embeds),
                 key_padding_mask=local_feat_padding_mask_text,
                 need_weights=True,  # 设置为 True 以获取注意力权重
@@ -302,16 +307,16 @@ class HAMMER(nn.Module):
 
             local_feat_it_cross_attn = image_embeds + attn_output
 
-            local_feat_aggr = self.aggregator(query=self.norm_layer_aggr(cls_tokens_local), 
-                                              key=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]), 
-                                              value=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]))[0]
+            local_feat_aggr = self.aggregator(query=self.norm_layer_aggr(cls_tokens_local),
+                                              key=self.norm_layer_aggr(local_feat_it_cross_attn[:, 1:, :]),
+                                              value=self.norm_layer_aggr(local_feat_it_cross_attn[:, 1:, :]))[0]
             output_coord = self.bbox_head(local_feat_aggr.squeeze(1)).sigmoid()
             loss_bbox, loss_giou = self.get_bbox_loss(output_coord, fake_image_box)
-            
+
             ##================= TMG ========================##    
-            token_label = text.attention_mask[:,1:].clone() # [:,1:] for ingoring class token
-            token_label[token_label==0] = -100 # -100 index = padding token
-            token_label[token_label==1] = 0
+            token_label = text.attention_mask[:, 1:].clone()  # [:,1:] for ingoring class token
+            token_label[token_label == 0] = -100  # -100 index = padding token
+            token_label[token_label == 1] = 0
 
             for batch_idx in range(len(fake_text_pos)):
                 fake_pos_sample = fake_text_pos[batch_idx]
@@ -323,147 +328,137 @@ class HAMMER(nn.Module):
 
             if self.args.token_momentum:
                 with torch.no_grad():
-                    logits_m = self.text_encoder_m(input_ids, 
-                                                attention_mask = text.attention_mask,
-                                                encoder_hidden_states = image_embeds_m,
-                                                encoder_attention_mask = image_atts,      
-                                                return_dict = True,
-                                                return_logits = True,   
-                                                )    
-                token_cls_output = self.text_encoder(input_ids, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            labels = token_label,   
-                                            soft_labels = F.softmax(logits_m.view(-1, 2),dim=-1),
-                                            alpha = alpha
-                                            )    
+                    logits_m = self.text_encoder_m(input_ids,
+                                                   attention_mask=text.attention_mask,
+                                                   encoder_hidden_states=image_embeds_m,
+                                                   encoder_attention_mask=image_atts,
+                                                   return_dict=True,
+                                                   return_logits=True,
+                                                   )
+                token_cls_output = self.text_encoder(input_ids,
+                                                     attention_mask=text.attention_mask,
+                                                     encoder_hidden_states=image_embeds,
+                                                     encoder_attention_mask=image_atts,
+                                                     return_dict=True,
+                                                     labels=token_label,
+                                                     soft_labels=F.softmax(logits_m.view(-1, 2), dim=-1),
+                                                     alpha=alpha
+                                                     )
             else:
-                token_cls_output  = self.text_encoder(input_ids, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            labels = token_label,   
-                                            )  
+                token_cls_output = self.text_encoder(input_ids,
+                                                     attention_mask=text.attention_mask,
+                                                     encoder_hidden_states=image_embeds,
+                                                     encoder_attention_mask=image_atts,
+                                                     return_dict=True,
+                                                     labels=token_label,
+                                                     )
 
             loss_TMG = token_cls_output.loss
 
             return loss_MAC, loss_BIC, loss_bbox, loss_giou, loss_TMG, loss_MLC
 
         else:
-            image_embeds = self.visual_encoder(image) 
-            image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(image.device)
+            with torch.cuda.amp.autocast():
+                stream1 = Stream(device=image.device)
+                stream2 = Stream(device=image.device)
 
-            text_output = self.text_encoder.bert(text.input_ids, attention_mask = text.attention_mask,                      
-                                           return_dict = True, mode = 'text')            
-            text_embeds = text_output.last_hidden_state
-            #forward the positve image-text pair
-            # share_feature=self.mdfend_model(text.input_ids, 
-            #                                 text.attention_mask, 
-            #                                 domain=torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device))  # 设置 domain 为 1)
-            # self.share_to_text = nn.Linear(320, 65536 * 768).to(text.input_ids.device)
-            # share_embedding = self.share_to_text(share_feature)
+                with autocast():
+                    with torch.cuda.stream(stream1):
+                        mdfend_feature = self.mdfend_model(
+                            token_id=text.input_ids,
+                            mask=text.attention_mask,
+                            domain=torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
+                        )  # [batch_size, 320]
+                        mdfend_feature = self.share_to_text(mdfend_feature)
 
-            mdfend_feature = self.mdfend_model(
-                                    token_id=text.input_ids,
-                                    mask=text.attention_mask,
-                                    domain=torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
-            )  # [batch_size, 320]
-            mdfend_feature=self.share_to_text(mdfend_feature)
-            # if not hasattr(self, 'share_to_text') or self.share_to_text.out_features != seq_length * hidden_size:
-            #     self.share_to_text = nn.Linear(320, seq_length * hidden_size).to(text.input_ids.device)
-            #
-            # mdfend_transformed = self.share_to_text(mdfend_feature)
-            # mdfend_transformed = mdfend_transformed.view(batch_size, seq_length, hidden_size)
-            #
-            # #text_embeds = text_embeds + mdfend_transformed
-            # text_embeds=mdfend_transformed
+                    with torch.cuda.stream(stream2):
+                        image_embeds = self.visual_encoder(image)
+                        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
 
-            # 4. 特征融合（三种方式）
-            # a. 加权融合
-            # fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
-            # combined_embeds = fusion_weight * text_embeds + (1 - fusion_weight) * mdfend_transformed
+                        text_output = self.text_encoder.bert(text.input_ids, attention_mask=text.attention_mask,
+                                                             return_dict=True, mode='text')
+                        text_embeds = text_output.last_hidden_state
 
-            # b. 注意力融合
-            # attention_weights = torch.matmul(text_embeds, mdfend_transformed.transpose(-2, -1))
-            # attention_weights = F.softmax(attention_weights, dim=-1)
-            # combined_embeds = torch.matmul(attention_weights, mdfend_transformed)
+                        output_pos = self.text_encoder.bert(encoder_embeds=text_embeds,
+                                                            attention_mask=text.attention_mask,
+                                                            encoder_hidden_states=image_embeds,
+                                                            encoder_attention_mask=image_atts,
+                                                            return_dict=True,
+                                                            mode='fusion',
+                                                            )
+                output_feature = output_pos.last_hidden_state[:, 0, :]
+                # combined_feature = torch.cat([output_feature, mdfend_feature], dim=1)
+                # fused_feature = self.fusion_layer(combined_feature)
 
-            # c. concat 后接线性层
-            # concat_embeds = torch.cat([text_embeds, mdfend_transformed], dim=-1)
-            # combined_embeds = self.fusion_layer(concat_embeds)  # 需要添加 fusion_layer 属性
-            # text_embeds=combined_embeds
-            output_pos = self.text_encoder.bert(encoder_embeds = text_embeds, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            mode = 'fusion',
-                                        )
-            output_feature = output_pos.last_hidden_state[:,0,:]
-            # combined_feature = torch.cat([output_feature, mdfend_feature], dim=1)
-            # fused_feature = self.fusion_layer(combined_feature)
-            fusion_weight = nn.Parameter(torch.FloatTensor([0.5])).to(text.input_ids.device)
-            fused_feature=fusion_weight*output_feature+(1-fusion_weight)*mdfend_feature
-            ##================= IMG ========================## 
-            bs = image.size(0)
-            cls_tokens_local = self.cls_token_local.expand(bs, -1, -1)
+                with autocast():
+                    fusion_weight = 0.5
+                    fused_feature = fusion_weight * output_feature + (1 - fusion_weight) * mdfend_feature
 
-            text_attention_mask_clone = text.attention_mask.clone() # [:,1:] for ingoring class token
-            local_feat_padding_mask_text = text_attention_mask_clone==0 # 0 = pad token
+                stream1.wait_stream(torch.cuda.current_stream())
+                stream2.wait_stream(torch.cuda.current_stream())
+                stream3 = Stream(device=image.device)
+                stream4 = Stream(device=image.device)
 
-            attn_output, attn_weights = self.it_cross_attn(
-                query=self.norm_layer_it_cross_atten(image_embeds), 
-                key=self.norm_layer_it_cross_atten(text_embeds), 
-                value=self.norm_layer_it_cross_atten(text_embeds),
-                key_padding_mask=local_feat_padding_mask_text,
-                need_weights=True,  # 设置为 True 以获取注意力权重
+                ##================= IMG ========================##
+                with torch.cuda.amp.autocast():
+                    with torch.cuda.stream(stream1):
+                        bs = image.size(0)
+                        cls_tokens_local = self.cls_token_local.expand(bs, -1, -1)
 
-            )
+                        text_attention_mask_clone = text.attention_mask.clone()  # [:,1:] for ingoring class token
+                        local_feat_padding_mask_text = text_attention_mask_clone == 0  # 0 = pad token
 
-            local_feat_it_cross_attn = image_embeds + attn_output
+                        attn_output, attn_weights = self.it_cross_attn(
+                            query=self.norm_layer_it_cross_atten(image_embeds),
+                            key=self.norm_layer_it_cross_atten(text_embeds),
+                            value=self.norm_layer_it_cross_atten(text_embeds),
+                            key_padding_mask=local_feat_padding_mask_text,
+                            need_weights=True,  # 设置为 True 以获取注意力权重
 
-            local_feat_aggr = self.aggregator(query=self.norm_layer_aggr(cls_tokens_local), 
-                                              key=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]), 
-                                              value=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]))[0]
-            output_coord = self.bbox_head(local_feat_aggr.squeeze(1)).sigmoid()
-            ##================= BIC ========================## 
-            logits_real_fake = self.itm_head(fused_feature)
-            ##================= MLC ========================## 
-            logits_multicls = self.cls_head(output_feature)
-            ##================= TMG ========================##   
-            input_ids = text.input_ids.clone()
-            logits_tok = self.text_encoder(input_ids, 
-                                        attention_mask = text.attention_mask,
-                                        encoder_hidden_states = image_embeds,
-                                        encoder_attention_mask = image_atts,      
-                                        return_dict = True,
-                                        return_logits = True,   
-                                        )     
+                        )
+
+                        local_feat_it_cross_attn = image_embeds + attn_output
+
+                        local_feat_aggr = self.aggregator(query=self.norm_layer_aggr(cls_tokens_local),
+                                                          key=self.norm_layer_aggr(local_feat_it_cross_attn[:, 1:, :]),
+                                                          value=self.norm_layer_aggr(local_feat_it_cross_attn[:, 1:, :]))[0]
+                        output_coord = self.bbox_head(local_feat_aggr.squeeze(1)).sigmoid()
+                ##================= BIC ========================##
+
+                    with torch.cuda.stream(stream2):
+                        logits_real_fake = self.itm_head(fused_feature)
+                ##================= MLC ========================##
+                    with torch.cuda.stream(stream3):
+                        logits_multicls = self.cls_head(fused_feature)
+
+                ##================= TMG ========================##
+                    with torch.cuda.stream(stream4):
+                        input_ids = text.input_ids.clone()
+                        logits_tok = self.text_encoder(input_ids,
+                                                       attention_mask=text.attention_mask,
+                                                       encoder_hidden_states=image_embeds,
+                                                       encoder_attention_mask=image_atts,
+                                                       return_dict=True,
+                                                       return_logits=True,
+                                                       )
             if return_attention:
                 return logits_real_fake, logits_multicls, output_coord, logits_tok, attn_weights
             else:
-                return logits_real_fake, logits_multicls, output_coord, logits_tok   
+                return logits_real_fake, logits_multicls, output_coord, logits_tok
 
-
-    @torch.no_grad()    
+    @torch.no_grad()
     def copy_params(self):
-        for model_pair in self.model_pairs:           
+        for model_pair in self.model_pairs:
             for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
                 param_m.data.copy_(param.data)  # initialize
                 param_m.requires_grad = False  # not update by gradient    
 
-            
-    @torch.no_grad()        
+    @torch.no_grad()
     def _momentum_update(self):
-        for model_pair in self.model_pairs:           
+        for model_pair in self.model_pairs:
             for param, param_m in zip(model_pair[0].parameters(), model_pair[1].parameters()):
                 param_m.data = param_m.data * self.momentum + param.data * (1. - self.momentum)
-                
-            
-            
+
     @torch.no_grad()
     def _dequeue_and_enqueue(self, image_feat, text_feat):
         # gather keys before updating queue
@@ -480,9 +475,9 @@ class HAMMER(nn.Module):
         self.text_queue[:, ptr:ptr + batch_size] = text_feats.T
         ptr = (ptr + batch_size) % self.queue_size  # move pointer
 
-        self.queue_ptr[0] = ptr 
-        
-        
+        self.queue_ptr[0] = ptr
+
+
 @torch.no_grad()
 def concat_all_gather(tensor):
     """
@@ -490,10 +485,8 @@ def concat_all_gather(tensor):
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
     tensors_gather = [torch.ones_like(tensor)
-        for _ in range(torch.distributed.get_world_size())]
+                      for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
 
     output = torch.cat(tensors_gather, dim=0)
     return output
-
-
