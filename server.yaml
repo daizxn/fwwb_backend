@@ -10,10 +10,27 @@ produces:
 basePath: /api
 
 paths:
+
+  /analyze:
+    post:
+      tags:
+        - all
+      summary: Analyze text
+      operationId: server.analyze
+      parameters:
+        - in: body
+          name: analyze_request
+          schema:
+            $ref: '#/definitions/AnalyzeRequest'
+      responses:
+        200:
+          description: OK
+          schema:
+            type: object
   /upload:
     post:
       summary: "Upload an image"
-      operationId: server.upload_image
+      operationId: server.upload
       consumes:
         - "multipart/form-data"
       parameters:
@@ -33,22 +50,6 @@ paths:
               image_path:
                 type: string
                 example: "/path/to/image.jpg"
-  /analyze:
-    post:
-      tags:
-        - all
-      summary: Analyze text
-      operationId: server.analyze
-      parameters:
-        - in: body
-          name: analyze_request
-          schema:
-            $ref: '#/definitions/AnalyzeRequest'
-      responses:
-        200:
-          description: OK
-          schema:
-            type: object
 
 
 

@@ -1,5 +1,4 @@
 import argparse
-import json
 
 import connexion
 import os
@@ -12,12 +11,11 @@ from api import FakeNewsDetector
 UPLOAD_FOLDER = './image'  # 上传目录
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-app = connexion.App(__name__)
-app.add_api('server.yaml')
+
 
 lm = None
 
-def upload_image():
+def upload():
     # 获取上传的文件
     file = request.files['file']
 
@@ -47,6 +45,8 @@ def analyze(analyze_request):
     return jsonify(res)
 
 
+app = connexion.App(__name__)
+app.add_api('server.yaml')
 
 parser = argparse.ArgumentParser()
 

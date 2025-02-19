@@ -6,12 +6,11 @@ services:
     container_name: pytorch-model
     ports:
       - "5000:5000"
-    environment:
-      - FLASK_ENV=production
     volumes:
-      - .:/app
+      - app_volume:/app
       - image_volume:/app/image  # 使用 Docker 卷来挂载图片目录
-    restart: always
+
 
 volumes:
     image_volume:
+    app_volume:

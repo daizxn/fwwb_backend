@@ -6,10 +6,15 @@ WORKDIR /app
 # 复制当前目录的内容到容器内
 COPY . /app
 
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx
+
+RUN  apt-get install -y \
+    libglib2.0-0
+
 # 安装所需的 Python 依赖
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
-
 
 # 设置启动命令
 CMD ["python", "server.py","--address","0.0.0.0","--port","5000"]
