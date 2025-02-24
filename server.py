@@ -32,8 +32,8 @@ def upload():
 def analyze(analyze_request):
     text=analyze_request.get('text')
     image_path=analyze_request.get('image')
-
-    pred_cls, pred_all_multicls, box, word_preds= lm.predict(text,image_path)
+    mode=analyze_request.get('mode')
+    pred_cls, pred_all_multicls, box, word_preds= lm.predict(text,image_path,mode)
 
     res = {
         'pred_cls': int(pred_cls),

@@ -194,16 +194,22 @@ class HAMMER(nn.Module):
         mdfend_input = {}
         mdfend_text_input = {}
         if mode == 'text':
+
+
+            text_output = self.text_encoder.bert(text.input_ids, attention_mask = text.attention_mask,return_dict = True, mode = 'text')
+            sequence_output = text_output[0]
+
+            sequence_output = self.text_encoder.dropout(sequence_output[:,1:]) # [:,1:] for ingoring class token
+            logits_tok = self.text_encoder.classifier(sequence_output)
+
+
             mdfend_input['domain'] = torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
             mdfend_text_input['token_id']=text.input_ids
             mdfend_text_input['mask']=text.attention_mask
             mdfend_input['text']=mdfend_text_input
-            return self.mdfend_model.predict(mdfend_input)
+            mdfend_label=self.mdfend_model.predict(mdfend_input)
+            return mdfend_label,logits_tok
 
-
-        batch_size = text.input_ids.size(0)
-        seq_length = text.input_ids.size(1)  # 实际序列长度
-        hidden_size = 768  # BERT 的隐藏层大小
         if is_train:
             with torch.no_grad():
                 self.temp.clamp_(0.001,0.5)

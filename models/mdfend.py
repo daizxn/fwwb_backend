@@ -170,8 +170,16 @@ class MDFEND(AbstractModel):
         domains = data_without_label['domain']
 
         # shape=(n,), data = 1 or 0
-        round_pred = torch.round(self.forward(token_ids, masks,
-                                              domains)).long()
+        feature=self.forward(token_ids, masks,
+                             domains)
+
+        label_pred = self.classifier(feature)
+
+
+
+        round_pred = torch.round(torch.sigmoid(label_pred.squeeze(1))).long()
         # after one hot: shape=(n,2), data = [0,1] or [1,0]
-        one_hot_pred = torch.nn.functional.one_hot(round_pred, num_classes=2)
-        return one_hot_pred
+        # one_hot_pred = torch.nn.functional.one_hot(round_pred, num_classes=2)
+        return round_pred
+        #
+
