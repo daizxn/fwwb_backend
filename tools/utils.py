@@ -211,6 +211,8 @@ def load_and_preprocess_image(image_path, image_res=256):
     except:
         raise ValueError("### Warning: fakenews_dataset Image.open")
 
+    width = image.width
+    height = image.height
     # 定义图像转换
     transform = transforms.Compose([
         transforms.Resize((image_res, image_res),interpolation=Image.BICUBIC),
@@ -220,4 +222,4 @@ def load_and_preprocess_image(image_path, image_res=256):
     # 应用转换
     image = transform(image)
 
-    return image.unsqueeze(0) # 添加batch维度
+    return image.unsqueeze(0) , width ,height # 添加batch维度
