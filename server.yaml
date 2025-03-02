@@ -11,17 +11,17 @@ basePath: /api
 
 paths:
 
-  /analyze:
+  /predict:
     post:
       tags:
         - all
-      summary: Analyze text
-      operationId: server.analyze
+      summary: predict text
+      operationId: server.predict
       parameters:
         - in: body
-          name: analyze_request
+          name: predict_request
           schema:
-            $ref: '#/definitions/AnalyzeRequest'
+            $ref: '#/definitions/PredictRequest'
       responses:
         200:
           description: OK
@@ -51,10 +51,27 @@ paths:
                 type: string
                 example: "/path/to/image.jpg"
 
+  /analyze:
+    post:
+      summary: "analyze data by llm"
+      operationId: server.llm_analyze
+      parameters:
+      - in: body
+        name: analyse_request
+        schema:
+          $ref: '#/definitions/AnalyseRequest'
+      responses:
+        200:
+          description: ok
+          schema:
+            type: object
+
+
+
 
 
 definitions:
-  AnalyzeRequest:
+  PredictRequest:
     type: object
     properties:
       text:
@@ -67,3 +84,16 @@ definitions:
       - text
       - image
       - mode
+
+  AnalyseRequest:
+    type: object
+    properties:
+      text:
+        type: string
+      image:
+        type: string
+      data:
+        type: object
+
+
+
