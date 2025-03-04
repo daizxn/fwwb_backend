@@ -21,7 +21,7 @@ class AbstractFakeNewsDetector:
 class FakeNewsDetector(AbstractFakeNewsDetector):
     def __init__(self, args=None, config=None):
         super().__init__()
-        self.tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder)
+        self.tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder,cache_dir="cache")
         self.model = HAMMER(
             args=args,
             config=config,
@@ -41,7 +41,7 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
 
         if mode == 'multi-label':
             text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True,
-                                        return_tensors='pt')
+                                        return_tensors='pt',cache_dir="cache")
             text_input = {k: v.to(self.device) for k, v in text_input.items()}
             text_input = SimpleNamespace(**text_input)
             image, ori_width, ori_height = load_and_preprocess_image(image_path)

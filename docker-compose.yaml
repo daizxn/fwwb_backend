@@ -1,5 +1,11 @@
 services:
   service:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
     build:
       context: .
       dockerfile: Dockerfile

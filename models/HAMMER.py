@@ -47,7 +47,8 @@ class HAMMER(nn.Module):
         
         self.text_encoder = BertForTokenClassification.from_pretrained(text_encoder, 
                                                                     config=bert_config, 
-                                                                    label_smoothing=config['label_smoothing'])      
+                                                                    label_smoothing=config['label_smoothing'],
+                                                                       cache_dir="cache")
 
         text_width = self.text_encoder.config.hidden_size
         self.vision_proj = nn.Linear(vision_width, embed_dim)

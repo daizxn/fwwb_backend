@@ -81,7 +81,7 @@ class MDFEND(AbstractModel):
         self.domain_num = domain_num
         self.expert_num = expert_num
         self.bert = BertModel.from_pretrained(
-            pre_trained_bert_name).requires_grad_(False)
+            pre_trained_bert_name,cache_dir="cache").requires_grad_(False)
         self.embedding_size = self.bert.config.hidden_size
         self.loss_func = nn.BCELoss()
         if mlp_dims is None:
