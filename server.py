@@ -60,6 +60,9 @@ def predict(predict_request):
 
     return jsonify(res)
 
+def predict_batch(predict_request):
+    result=lm.predict_batch(predict_request)
+    return jsonify(result)
 
 def llm_analyze(analyse_request):
     data = analyse_request.get('data')

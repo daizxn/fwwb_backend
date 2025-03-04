@@ -86,7 +86,7 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
                     break
                 word_preds.append({'token': token, 'pred': int(tok_pred[i])})
 
-            return pred_cls, pred_all_multicls, box, word_preds
+            return int(pred_cls), pred_all_multicls, box, word_preds
 
         elif mode == 'text':
             text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True,
@@ -111,8 +111,22 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
                     break
                 word_preds.append({'token': token, 'pred': int(tok_pred[i])})
 
-            return logits_real_fake, {}, {}, word_preds
+            return int(logits_real_fake), {}, {}, word_preds
 
+    def predict_batch(self,data):
+        results=[]
+        for item in data:
+            result={}
+            text = item['text']
+            image_path = item['image']
+            mode = item['mode']
+            pred_cls, pred_all_multicls, box, word_preds = self.predict(text, image_path, mode)
+            result['pred_cls'] = pred_cls
+            result['pred_all_multicls'] = pred_all_multicls
+            result['box'] = box
+            result['word_preds'] = word_preds
+            results.append(result)
+        return results
 
 class AbstractLLMModel:
     def __init__(self, url, api_key):

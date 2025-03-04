@@ -27,6 +27,26 @@ paths:
           description: OK
           schema:
             type: object
+  /predict/batch:
+    post:
+      summary: predict batch
+      operationId: server.predict_batch
+      parameters:
+        - in: body
+          name: predict_request
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/PredictRequest'
+      responses:
+        200:
+          description: OK
+          schema:
+            type: array
+            items:
+              type: object
+
+
   /upload:
     post:
       summary: "Upload an image"
