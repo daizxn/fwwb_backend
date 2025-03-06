@@ -10,6 +10,8 @@ tools/__pycache__/
 save/
 image/
 __pycache__/
+cache/
+test.py
 .classpath
 .project
 .settings

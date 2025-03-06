@@ -48,7 +48,7 @@ class HAMMER(nn.Module):
         self.text_encoder = BertForTokenClassification.from_pretrained(text_encoder, 
                                                                     config=bert_config, 
                                                                     label_smoothing=config['label_smoothing'],
-                                                                       cache_dir="cache")
+                                                                       )
 
         text_width = self.text_encoder.config.hidden_size
         self.vision_proj = nn.Linear(vision_width, embed_dim)
@@ -191,7 +191,7 @@ class HAMMER(nn.Module):
 
         return loss_bbox.sum() / num_boxes, loss_giou.sum() / num_boxes
 
-    def forward(self, image=None, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0, is_train=True, return_attention=False, mode='multi-label',):
+    def forward(self, image=None, label=None, text=None, fake_image_box=None, fake_text_pos=None, alpha=0, is_train=True, return_attention=False, mode='multi-label',return_logits=False):
         mdfend_input = {}
         mdfend_text_input = {}
         if mode == 'text':
@@ -200,164 +200,21 @@ class HAMMER(nn.Module):
             text_output = self.text_encoder.bert(text.input_ids, attention_mask = text.attention_mask,return_dict = True, mode = 'text')
             sequence_output = text_output[0]
 
-            sequence_output = self.text_encoder.dropout(sequence_output[:,1:]) # [:,1:] for ingoring class token
-            logits_tok = self.text_encoder.classifier(sequence_output)
-
-
             mdfend_input['domain'] = torch.ones(text.input_ids.size(0), dtype=torch.long).to(text.input_ids.device)
             mdfend_text_input['token_id']=text.input_ids
             mdfend_text_input['mask']=text.attention_mask
             mdfend_input['text']=mdfend_text_input
+            if return_logits:
+                return self.mdfend_model.forward(mdfend_text_input['token_id'], mdfend_text_input['mask'], mdfend_input['domain'])
+
             mdfend_label=self.mdfend_model.predict(mdfend_input)
+
+            sequence_output = self.text_encoder.dropout(sequence_output[:,1:]) # [:,1:] for ingoring class token
+            logits_tok = self.text_encoder.classifier(sequence_output)
+
+
+
             return mdfend_label,logits_tok
-
-        if is_train:
-            with torch.no_grad():
-                self.temp.clamp_(0.001,0.5)
-            ##================= multi-label convert ========================## 
-            multicls_label, real_label_pos = get_multi_label(label, image)
-            
-            ##================= MAC ========================## 
-            image_embeds = self.visual_encoder(image) 
-            image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(image.device)
-
-            image_feat = F.normalize(self.vision_proj(image_embeds[:,0,:]),dim=-1)  
-
-            text_output = self.text_encoder.bert(text.input_ids, attention_mask = text.attention_mask,                      
-                                            return_dict = True, mode = 'text')            
-            text_embeds = text_output.last_hidden_state
-            text_feat = F.normalize(self.text_proj(text_embeds[:,0,:]),dim=-1)                 
-                
-            # get momentum features
-            with torch.no_grad():
-                self._momentum_update()
-                image_embeds_m = self.visual_encoder_m(image) 
-                image_feat_m = F.normalize(self.vision_proj_m(image_embeds_m[:,0,:]),dim=-1)  
-                image_feat_all = torch.cat([image_feat_m.t(),self.image_queue.clone().detach()],dim=1)           
-
-                text_output_m = self.text_encoder_m.bert(text.input_ids, attention_mask = text.attention_mask,                      
-                                                    return_dict = True, mode = 'text')    
-                text_feat_m = F.normalize(self.text_proj_m(text_output_m.last_hidden_state[:,0,:]),dim=-1) 
-                text_feat_all = torch.cat([text_feat_m.t(),self.text_queue.clone().detach()],dim=1)
-
-                sim_i2t_m = image_feat_m @ text_feat_all / self.temp 
-                sim_t2i_m = text_feat_m @ image_feat_all / self.temp     
-
-                sim_targets = torch.zeros(sim_i2t_m.size()).to(image.device)
-                # fine-grained alignment: only orig should be aligned, 1 here means img-text aligned 
-                sim_targets[real_label_pos, real_label_pos] = 1 
-
-                sim_targets_g2g = torch.zeros(sim_i2t_m.size()).to(image.device)
-                sim_targets_g2g.fill_diagonal_(1)       
-                
-                sim_i2t_targets = alpha * F.softmax(sim_i2t_m, dim=1) + (1 - alpha) * sim_targets
-                sim_t2i_targets = alpha * F.softmax(sim_t2i_m, dim=1) + (1 - alpha) * sim_targets        
-
-            sim_i2t = image_feat @ text_feat_all / self.temp 
-            sim_t2i = text_feat @ image_feat_all / self.temp 
-                                
-            loss_i2t = -torch.sum(F.log_softmax(sim_i2t, dim=1)*sim_i2t_targets,dim=1).mean()
-            loss_t2i = -torch.sum(F.log_softmax(sim_t2i, dim=1)*sim_t2i_targets,dim=1).mean() 
-            
-            # in-modality g2g loss
-            sim_i2i = image_feat @ image_feat_all / self.temp
-            sim_t2t = text_feat @ text_feat_all / self.temp
-
-            loss_i2i = -torch.sum(F.log_softmax(sim_i2i, dim=1)*sim_targets_g2g,dim=1).mean()
-            loss_t2t = -torch.sum(F.log_softmax(sim_t2t, dim=1)*sim_targets_g2g,dim=1).mean()
-
-            loss_MAC = (loss_i2t+loss_t2i+loss_i2i+loss_t2t)/4
-
-            self._dequeue_and_enqueue(image_feat_m, text_feat_m)
-
-            ##================= BIC ========================## 
-            # forward the positve image-text pair
-            output_pos = self.text_encoder.bert(encoder_embeds = text_embeds, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            mode = 'fusion',
-                                        )            
-            with torch.no_grad():
-                bs = image.size(0)          
-
-            itm_labels = torch.ones(bs, dtype=torch.long).to(image.device)
-            itm_labels[real_label_pos] = 0 # fine-grained matching: only orig should be matched, 0 here means img-text matching
-            vl_output = self.itm_head(output_pos.last_hidden_state[:,0,:])   
-            loss_BIC = F.cross_entropy(vl_output, itm_labels) 
-
-            ##================= MLC ========================## 
-            output_cls = self.cls_head(output_pos.last_hidden_state[:,0,:])
-            loss_MLC = F.binary_cross_entropy_with_logits(output_cls, multicls_label.type(torch.float))
-
-            ##================= IMG ========================## 
-            # local features of visual part
-            cls_tokens_local = self.cls_token_local.expand(bs, -1, -1)
-
-            text_attention_mask_clone = text.attention_mask.clone() # [:,1:] for ingoring class token
-            local_feat_padding_mask_text = text_attention_mask_clone==0 # 0 = pad token
-
-            attn_output, attn_weights = self.it_cross_attn(
-                query=self.norm_layer_it_cross_atten(image_embeds), 
-                key=self.norm_layer_it_cross_atten(text_embeds), 
-                value=self.norm_layer_it_cross_atten(text_embeds),
-                key_padding_mask=local_feat_padding_mask_text,
-                need_weights=True,  # 设置为 True 以获取注意力权重
-
-            )
-
-            local_feat_it_cross_attn = image_embeds + attn_output
-
-            local_feat_aggr = self.aggregator(query=self.norm_layer_aggr(cls_tokens_local), 
-                                              key=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]), 
-                                              value=self.norm_layer_aggr(local_feat_it_cross_attn[:,1:,:]))[0]
-            output_coord = self.bbox_head(local_feat_aggr.squeeze(1)).sigmoid()
-            loss_bbox, loss_giou = self.get_bbox_loss(output_coord, fake_image_box)
-            
-            ##================= TMG ========================##    
-            token_label = text.attention_mask[:,1:].clone() # [:,1:] for ingoring class token
-            token_label[token_label==0] = -100 # -100 index = padding token
-            token_label[token_label==1] = 0
-
-            for batch_idx in range(len(fake_text_pos)):
-                fake_pos_sample = fake_text_pos[batch_idx]
-                if fake_pos_sample:
-                    for pos in fake_pos_sample:
-                        token_label[batch_idx, pos] = 1
-
-            input_ids = text.input_ids.clone()
-
-            if self.args.token_momentum:
-                with torch.no_grad():
-                    logits_m = self.text_encoder_m(input_ids, 
-                                                attention_mask = text.attention_mask,
-                                                encoder_hidden_states = image_embeds_m,
-                                                encoder_attention_mask = image_atts,      
-                                                return_dict = True,
-                                                return_logits = True,   
-                                                )    
-                token_cls_output = self.text_encoder(input_ids, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            labels = token_label,   
-                                            soft_labels = F.softmax(logits_m.view(-1, 2),dim=-1),
-                                            alpha = alpha
-                                            )    
-            else:
-                token_cls_output  = self.text_encoder(input_ids, 
-                                            attention_mask = text.attention_mask,
-                                            encoder_hidden_states = image_embeds,
-                                            encoder_attention_mask = image_atts,      
-                                            return_dict = True,
-                                            labels = token_label,   
-                                            )  
-
-            loss_TMG = token_cls_output.loss
-
-            return loss_MAC, loss_BIC, loss_bbox, loss_giou, loss_TMG, loss_MLC
 
         else:
             image_embeds = self.visual_encoder(image) 

@@ -21,7 +21,7 @@ class AbstractFakeNewsDetector:
 class FakeNewsDetector(AbstractFakeNewsDetector):
     def __init__(self, args=None, config=None):
         super().__init__()
-        self.tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder,cache_dir="cache")
+        self.tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder)
         self.model = HAMMER(
             args=args,
             config=config,
@@ -40,8 +40,8 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
     def predict(self, text, image_path=None, mode='text'):
 
         if mode == 'multi-label':
-            text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True,
-                                        return_tensors='pt',cache_dir="cache")
+            text_input = self.tokenizer(text, padding='max_length', max_length=512, truncation=True,
+                                        return_tensors='pt')
             text_input = {k: v.to(self.device) for k, v in text_input.items()}
             text_input = SimpleNamespace(**text_input)
             image, ori_width, ori_height = load_and_preprocess_image(image_path)
@@ -89,7 +89,37 @@ class FakeNewsDetector(AbstractFakeNewsDetector):
             return int(pred_cls), pred_all_multicls, box, word_preds
 
         elif mode == 'text':
-            text_input = self.tokenizer(text, padding='max_length', max_length=128, truncation=True,
+            if len(text)>512:
+                text_input = self.tokenizer(text,
+                                            padding='max_length',
+                                            max_length=512,
+                                            truncation=True,
+                                            return_overflowing_tokens=True,
+                                            stride=128,
+                                            return_tensors='pt')
+                logits_list = []
+                for i in range(text_input['input_ids'].shape[0]):
+                    inputs={k: v[i].unsqueeze(0).to(self.device) for k, v in text_input.items()}
+                    inputs = SimpleNamespace(**inputs)
+                    with torch.no_grad():
+                        logits = self.model(image=None,
+                                          text=inputs,
+                                          is_train=False,
+                                          return_attention=True,
+                                          mode=mode,
+                                          return_logits=True)
+                        logits_list.append(logits)
+                        avg_logits = torch.mean(torch.stack(logits_list), dim=0)
+                        label_pred = self.model.mdfend_model.classifier(avg_logits)
+                        return int(label_pred.argmax(1)), {}, {}, []
+
+
+            text_input = self.tokenizer(text,
+                                        padding='max_length',
+                                        max_length=512,
+                                        truncation=True,
+                                        return_overflowing_tokens=True,
+                                        stride=128,
                                         return_tensors='pt')
             text_input = {k: v.to(self.device) for k, v in text_input.items()}
             text_input = SimpleNamespace(**text_input)
