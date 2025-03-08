@@ -11,5 +11,5 @@ PyYAML
 timm==0.4.12
 torchvision==0.11.3
 torch==1.10.2
-transformers==4.8.1
+transformers
 openai

@@ -14,8 +14,9 @@ lm = None
 
 deepseekLm = None
 
-content = "现在你要求扮演一位文本助手，要根据以下内容去编写说明文档。先你要扮演一位新闻专家，你要求根据以下材料说明该新闻为何为假或，特别的，我们提供的理由必然准确，同时个别新闻会有图片，我们会提供图片的造假情况，请你结合存在的图片造假情况和文本情况，去说明该新闻为假的理由，请注意，我们提供的材料必然为真实材料，不要质疑材料准确性，假新闻类型以空格为分割，新闻造假类型以假新闻类型为准，若不存在假新闻类型则为文本造假，可能存在的假词以空格为分割，每个词为独立的词，可能存在的假词仅为该token可能是否造假，请结合文本判断，图片可能无法提供，请你以图片存在的情况下，对文本和材料进行分析"
+system_default_content = "现在你要求扮演一位文本助手，要根据以下内容去编写说明文档。先你要扮演一位新闻专家，你要求根据以下材料说明该新闻为何为假或，特别的，我们提供的理由必然准确，同时个别新闻会有图片，我们会提供图片的造假情况，请你结合存在的图片造假情况和文本情况，去说明该新闻为假的理由，请注意，我们提供的材料必然为真实材料，不要质疑材料准确性，假新闻类型以空格为分割，新闻造假类型以假新闻类型为准，若不存在假新闻类型则为文本造假，可能存在的假词以空格为分割，每个词为独立的词，可能存在的假词仅为该token可能是否造假，请结合文本判断，图片可能无法提供，请你以图片存在的情况下，对文本和材料进行分析"
 
+llm_flag = True
 
 def process_data(data,news_content):
     news_true_or_false = "真" if data["pred_cls"] != 0 else "假"
@@ -65,6 +66,8 @@ def predict_batch(predict_request):
     return jsonify(result)
 
 def llm_analyze(analyse_request):
+    if not llm_flag:
+        return jsonify(message="No LLM API key or URL provided, LLM will not be used."), 400
     data = analyse_request.get('data')
     news_content=analyse_request.get('text')
     analyse = deepseekLm.chat(process_data(data,news_content))
@@ -109,6 +112,8 @@ parser.add_argument("--port", default="5001")
 parser.add_argument("--nocache", default=False)
 
 parser.add_argument("--no_cors", action='store_true')
+parser.add_argument("--llm_api_key", default="none")
+parser.add_argument("--llm_url", default="none")
 if __name__ == '__main__':
     args = parser.parse_args()
     app.run(port=int(args.port), host=args.address)
@@ -117,6 +122,10 @@ else:
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
     # load_projects(args.dir)
     lm = FakeNewsDetector(args=args, config=config)
-    deepseekLm = LLModel(url="https://ark.cn-beijing.volces.com/api/v3",
-                         api_key='05fe7d3b-aa40-4a54-b080-ac06c5a371b5',
-                         system_content=content)
+    if args.llm_api_key == "none" or args.llm_url == "none":
+        print("No LLM API key or URL provided, LLM will not be used.")
+        llm_flag=False
+    else:
+        deepseekLm = LLModel(url=args.llm_url,
+                             api_key=args.llm_api_key,
+                             system_content=system_default_content)

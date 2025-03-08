@@ -178,7 +178,7 @@ class LLModel(AbstractLLMModel):
 
     def chat(self, data):
         completion = self.client.chat.completions.create(
-            model="ep-20250226134125-8h4b5",  # your model endpoint ID
+            model="deepseek-r1-250120",  # your model endpoint ID
             messages=[
                 {"role": "system", "content": self.system_content},
                 {"role": "user", "content":data}
