@@ -61,8 +61,6 @@ transformers.logging.set_verbosity_error()
 
 logger = logging.get_logger(__name__)
 
-_CONFIG_FOR_DOC = "BertConfig"
-_TOKENIZER_FOR_DOC = "BertTokenizer"
 
 BERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "bert-base-uncased",
@@ -869,10 +867,8 @@ class BertModel(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-
         checkpoint="bert-base-uncased",
         output_type=BaseModelOutputWithPoolingAndCrossAttentions,
-
     )
     
     
@@ -1105,7 +1101,7 @@ class BertForPreTraining(BertPreTrainedModel):
         self.cls.predictions.decoder = new_embeddings
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=BertForPreTrainingOutput, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=BertForPreTrainingOutput)
     def forward(
         self,
         input_ids=None,
@@ -1203,7 +1199,7 @@ class BertLMHeadModel(BertPreTrainedModel):
         self.cls.predictions.decoder = new_embeddings
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=CausalLMOutputWithCrossAttentions, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=CausalLMOutputWithCrossAttentions)
     def forward(
         self,
         input_ids=None,
@@ -1362,10 +1358,8 @@ class BertForMaskedLM(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="bert-base-uncased",
         output_type=MaskedLMOutput,
-        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
@@ -1470,7 +1464,7 @@ class BertForNextSentencePrediction(BertPreTrainedModel):
         self.init_weights()
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @replace_return_docstrings(output_type=NextSentencePredictorOutput, config_class=_CONFIG_FOR_DOC)
+    @replace_return_docstrings(output_type=NextSentencePredictorOutput)
     def forward(
         self,
         input_ids=None,
@@ -1567,10 +1561,8 @@ class BertForSequenceClassification(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="bert-base-uncased",
         output_type=SequenceClassifierOutput,
-        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
@@ -1651,10 +1643,8 @@ class BertForMultipleChoice(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, num_choices, sequence_length"))
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="bert-base-uncased",
         output_type=MultipleChoiceModelOutput,
-        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
@@ -1759,10 +1749,8 @@ class BertForTokenClassification(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="bert-base-uncased",
         output_type=TokenClassifierOutput,
-        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,
@@ -1872,10 +1860,8 @@ class BertForQuestionAnswering(BertPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(BERT_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @add_code_sample_docstrings(
-        tokenizer_class=_TOKENIZER_FOR_DOC,
         checkpoint="bert-base-uncased",
         output_type=QuestionAnsweringModelOutput,
-        config_class=_CONFIG_FOR_DOC,
     )
     def forward(
         self,

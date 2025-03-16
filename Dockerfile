@@ -1,15 +1,13 @@
-FROM pytorch/pytorch:1.10.0-cuda11.3-cudnn8-runtime
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
-ENV TRANSFORMERS_CACHE=/app/cache \
-    HF_DATASETS_CACHE=/app/cache \
-    HF_ENDPOINT="https://hf-mirror.com"
+ENV HF_ENDPOINT="https://hf-mirror.com"
 
 # 设置工作目录
 WORKDIR /app
 
-ARG CACHE_BUST=1
-ARG LLM_API_KEY="node"
-ARG LLM_URL="none"
+#ARG CACHE_BUST=1
+#ARG LLM_API_KEY="node"
+#ARG LLM_URL="none"
 
 # 复制当前目录的内容到容器内
 COPY . /app
@@ -22,13 +20,17 @@ RUN  apt-get install -y \
 
 # 安装所需的 Python 依赖
 
-RUN pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# RUN pip install -r requirements.txt -i http://mirrors.aliyun.com/pypi/simple/
+
+RUN pip install -r requirements.txt
 
 RUN python pre_load.py
 
 
 # 设置启动命令
-CMD ["python", "server.py","--address","0.0.0.0","--port","5000","--llm_api_key","${LLM_API_KEY}","--llm_url","${LLM_URL}"]
+# CMD ["python", "server.py","--address","0.0.0.0","--port","5000","--llm_api_key","${LLM_API_KEY}","--llm_url","${LLM_URL}"]
+
+ENTRYPOINT ["python","server.py","--address","0.0.0.0","--port","5000"]
 
 # github上没有模型的参数，若要本地运行，需要将模型参数下载到本地，然后在Dockerfile中添加COPY命令
 # COPY ./model_pth /app/model_pth

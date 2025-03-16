@@ -5,11 +5,11 @@ connexion[swagger-ui]
 connexion[flask]
 connexion[uvicorn]
 numpy
-opencv-python==4.5.5.62
+opencv-python
 pillow
 PyYAML
-timm==0.4.12
-torchvision==0.11.3
-torch==1.10.2
+timm
+torchvision
+torch
 transformers
 openai
